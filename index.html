@@ -59,8 +59,10 @@ body { font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; backgrou
 
 .board { padding:16px 20px; display:flex; flex-direction:column; gap:12px; }
 .floor-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; align-items:start; }
+.filtered-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px; align-items:start; }
 .section-label { font-size:10px; font-weight:700; color:var(--text-4); text-transform:uppercase; letter-spacing:0.8px; padding:4px 0 2px; display:flex; align-items:center; gap:8px; }
 .section-label::after { content:''; flex:1; height:1px; background:var(--border); }
+.no-results { text-align:center; padding:60px 20px; color:var(--text-4); font-size:14px; }
 
 .floor-card { background:var(--surface); border-radius:var(--r); border:1px solid var(--border); box-shadow:var(--shadow); overflow:hidden; transition:box-shadow 0.18s; }
 .floor-card:hover { box-shadow:var(--shadow-md); }
@@ -160,6 +162,7 @@ body { font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; backgrou
     <button class="fpill" data-f="notcalled" onclick="setFilter('notcalled',this)"><span class="dot" style="background:#ff9500"></span>Not Called</button>
     <button class="fpill" data-f="delivered" onclick="setFilter('delivered',this)"><span class="dot" style="background:#34c759"></span>Delivered</button>
     <button class="fpill" data-f="nextday" onclick="setFilter('nextday',this)"><span class="dot" style="background:#8a6f00"></span>Next Day</button>
+    <button class="fpill" data-f="verified" onclick="setFilter('verified',this)"><span class="dot" style="background:#14532d"></span>Verified</button>
   </div>
   <button class="btn-sm" onclick="exportCSV()">⬇ Export CSV</button>
 </div>
@@ -260,9 +263,14 @@ function populateSelects(){
   document.getElementById('fDeliverer').innerHTML=DELIVERERS.map(d=>`<option>${d}</option>`).join('');
 }
 
-function setFilter(f,btn){activeFilter=f;document.querySelectorAll('.fpill').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderBoard();}
+function setFilter(f,btn){
+  activeFilter=f;
+  document.querySelectorAll('.fpill').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderBoard();
+}
 
-function matchesFilter(p){
+function patientMatchesFilter(p){
   const q=document.getElementById('searchInput').value.toLowerCase();
   if(q&&!`${p.name} ${p.floor} ${p.notes} ${p.status}`.toLowerCase().includes(q))return false;
   if(activeFilter==='all')return true;
@@ -270,6 +278,7 @@ function matchesFilter(p){
   if(activeFilter==='notcalled')return p.called==='NO';
   if(activeFilter==='delivered')return p.delivery==='Delivered';
   if(activeFilter==='nextday')return p.status==='Next Day d/c';
+  if(activeFilter==='verified')return p.status==='Verified'||p.delivery==='Verified';
   return true;
 }
 
@@ -282,29 +291,54 @@ function inlineChange(pid,field,val){
 }
 
 function renderBoard(){
-  let html='';
-  FLOOR_ROWS.forEach(row=>{html+=`<div class="floor-row">${row.map(f=>cardHtml(f)).join('')}</div>`;});
-  html+=`<div class="section-label">Special &amp; Additional Areas</div>`;
-  for(let i=0;i<SPECIAL_FLOORS.length;i+=3){
-    const chunk=SPECIAL_FLOORS.slice(i,i+3);
-    while(chunk.length<3)chunk.push(null);
-    html+=`<div class="floor-row">${chunk.map(f=>f?cardHtml(f):'<div></div>').join('')}</div>`;
+  const isFiltered = activeFilter !== 'all' || document.getElementById('searchInput').value.trim() !== '';
+  let html = '';
+
+  if(isFiltered){
+    // When filtering: show only floor cards that have matching patients, in a free-flow grid
+    const matchingFloors = ALL_FLOORS.filter(floor =>
+      patients.some(p => p.floor === floor.label && patientMatchesFilter(p))
+    );
+    if(matchingFloors.length === 0){
+      html = `<div class="no-results">No patients match this filter.</div>`;
+    } else {
+      html += `<div class="filtered-grid">`;
+      matchingFloors.forEach(floor => { html += cardHtml(floor, true); });
+      html += `</div>`;
+    }
+  } else {
+    // Default: show all floors in the aligned row layout
+    FLOOR_ROWS.forEach(row => {
+      html += `<div class="floor-row">${row.map(f=>cardHtml(f,false)).join('')}</div>`;
+    });
+    html += `<div class="section-label">Special &amp; Additional Areas</div>`;
+    for(let i=0;i<SPECIAL_FLOORS.length;i+=3){
+      const chunk=SPECIAL_FLOORS.slice(i,i+3);
+      while(chunk.length<3)chunk.push(null);
+      html+=`<div class="floor-row">${chunk.map(f=>f?cardHtml(f,false):'<div></div>').join('')}</div>`;
+    }
   }
+
   document.getElementById('board').innerHTML=html;
   updateStats();
 }
 
-function cardHtml(floor){
-  const fp=patients.filter(p=>p.floor===floor.label&&matchesFilter(p));
-  const all=patients.filter(p=>p.floor===floor.label);
-  const hasUrgent=all.some(p=>p.status==='Problem/Issue'||p.status==='In the Works !!!');
+function cardHtml(floor, filterMode){
+  const allForFloor = patients.filter(p=>p.floor===floor.label);
+  const visiblePatients = filterMode
+    ? allForFloor.filter(p=>patientMatchesFilter(p))
+    : allForFloor;
+
+  const hasUrgent=allForFloor.some(p=>p.status==='Problem/Issue'||p.status==='In the Works !!!');
   let hCls='fcard-hdr';
   if(hasUrgent)hCls+=' h-alert';
   else if(floor.warn)hCls+=' h-warn';
   const wIcon=floor.warn?'⚠ ':'';
   const sub=(floor.warn||floor.note)?`<div class="floor-sub">${floor.warn||floor.note}</div>`:'';
-  const rows=fp.length?fp.map(p=>ptRow(p)).join(''):`<div class="floor-empty">No active patients</div>`;
-  return `<div class="floor-card"><div class="${hCls}"><div><div class="floor-title">${wIcon}${esc(floor.label)}</div>${sub}</div><div class="fcard-hdr-right"><span class="fcount">${all.length}</span><button class="fadd" onclick="openAdd('${esc(floor.label)}')">+</button></div></div><div>${rows}</div></div>`;
+  const rows=visiblePatients.length
+    ? visiblePatients.map(p=>ptRow(p)).join('')
+    : `<div class="floor-empty">No active patients</div>`;
+  return `<div class="floor-card"><div class="${hCls}"><div><div class="floor-title">${wIcon}${esc(floor.label)}</div>${sub}</div><div class="fcard-hdr-right"><span class="fcount">${allForFloor.length}</span><button class="fadd" onclick="openAdd('${esc(floor.label)}')">+</button></div></div><div>${rows}</div></div>`;
 }
 
 function ptRow(p){
